@@ -1,0 +1,12 @@
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = true
+# PORT is injected by Vercel; Docker CMD passes it to Streamlit
+# address is set in Docker CMD (0.0.0.0)
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
