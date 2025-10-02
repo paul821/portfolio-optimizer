@@ -25,9 +25,11 @@ def _check_inputs(mu, Sigma, ridge=1e-10):
 
 def portfolio_stats(w, mu, Sigma):
     w = _as_col(w)
-    m = float(w.T @ mu)
-    v = float(w.T @ Sigma @ w)
-    s = float(np.sqrt(max(v, 0)))
+    # --- FIX for DeprecationWarning ---
+    m = (w.T @ mu).item()
+    v = (w.T @ Sigma @ w).item()
+    # --- END FIX ---
+    s = np.sqrt(max(v, 0))
     return m, s, v, (m / s if s > 0 else np.nan)
 
 # ------------- optimizers -------------
@@ -46,7 +48,7 @@ def gmv_unconstrained(Sigma):
     n = Sigma.shape[0]
     ones = np.ones((n, 1))
     w = np.linalg.solve(Sigma, ones)
-    w /= float(ones.T @ w)
+    w /= (ones.T @ w).item()
     return w.flatten()
 
 def gmv_long_only(Sigma, starts=30, maxiter=800):
@@ -72,7 +74,7 @@ def tangency_unconstrained(mu, Sigma, rf):
     mu, Sigma, ones, n = _check_inputs(mu, Sigma)
     excess = mu - rf * ones
     w_unnorm = np.linalg.solve(Sigma, excess)
-    w = w_unnorm / float(ones.T @ w_unnorm)
+    w = w_unnorm / (ones.T @ w_unnorm).item()
     return w.flatten()
 
 def tangency_long_only(mu, Sigma, rf, starts=30, maxiter=800):
@@ -100,9 +102,9 @@ def tangency_long_only(mu, Sigma, rf, starts=30, maxiter=800):
 def min_var_for_target_return_unconstrained(mu, Sigma, target):
     mu, Sigma, ones, n = _check_inputs(mu, Sigma)
     inv = np.linalg.inv(Sigma)
-    A = float(ones.T @ inv @ ones)
-    B = float(ones.T @ inv @ mu)
-    C = float(mu.T   @ inv @ mu)
+    A = (ones.T @ inv @ ones).item()
+    B = (ones.T @ inv @ mu).item()
+    C = (mu.T   @ inv @ mu).item()
     D = A*C - B**2
     if abs(D) < 1e-12:
         raise ValueError("Degenerate covariance structure (D ≈ 0)")
@@ -387,6 +389,19 @@ if st.button("🚀 Compute", type="primary"):
             out = pd.DataFrame({"Weight": w}, index=asset_names).sort_values("Weight", ascending=False)
             st.write("**GMV Portfolio Weights**")
             st.dataframe(out.style.format({"Weight": "{:.2%}"}), use_container_width=True)
+
+            # --- FIX for Missing GMV Plot ---
+            fig, ax = plt.subplots(figsize=(8, max(4, n_assets * 0.5)))
+            colors = plt.cm.viridis(np.linspace(0, 1, n_assets))
+            out.sort_values("Weight").plot(kind='barh', ax=ax, legend=False, color=colors)
+            ax.set_xlabel("Weight")
+            ax.set_ylabel("Asset")
+            ax.set_title("GMV Portfolio Allocation")
+            ax.axvline(0, color='black', linewidth=0.8)
+            plt.tight_layout()
+            st.pyplot(fig)
+            # --- END FIX ---
+
         except Exception as e:
             st.error(f"❌ GMV optimization failed: {e}")
 
@@ -405,6 +420,19 @@ if st.button("🚀 Compute", type="primary"):
             out = pd.DataFrame({"Weight": w}, index=asset_names).sort_values("Weight", ascending=False)
             st.write("**Tangency Portfolio Weights**")
             st.dataframe(out.style.format({"Weight": "{:.2%}"}), use_container_width=True)
+            
+            # --- FIX for Missing Tangency Plot ---
+            fig, ax = plt.subplots(figsize=(8, max(4, n_assets * 0.5)))
+            colors = plt.cm.viridis(np.linspace(0, 1, n_assets))
+            out.sort_values("Weight").plot(kind='barh', ax=ax, legend=False, color=colors)
+            ax.set_xlabel("Weight")
+            ax.set_ylabel("Asset")
+            ax.set_title(f"Tangency Portfolio Allocation (Sharpe = {sharpe:.3f})")
+            ax.axvline(0, color='black', linewidth=0.8)
+            plt.tight_layout()
+            st.pyplot(fig)
+            # --- END FIX ---
+
         except Exception as e:
             st.error(f"❌ Tangency optimization failed: {e}")
 
