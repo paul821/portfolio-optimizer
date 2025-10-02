@@ -229,23 +229,106 @@ with col_b:
         st.session_state.mu_values = init_mu
     
     mu_df = pd.DataFrame({"ExpectedReturn": st.session_state.mu_values}, index=asset_names)
-    edited_mu = st.data_editor(mu_df, use_container_width=True, key="mu_editor")
-    st.session_state.mu_values = edited_mu["ExpectedReturn"].tolist()
+    mu_edited = st.data_editor(mu_df, use_container_width=True, key="mu_editor")
+    st.session_state.mu_values = mu_edited["ExpectedReturn"].tolist()
 
 # Risk input method selection
 st.markdown("#### Risk Input Method")
-risk_input_method = st.radio(
-    "Choose how to input risk:",
-    ["Standard Deviation (σ)", "Variance (σ²)"],
-    horizontal=True,
-    help="Standard deviation is more intuitive (same units as returns). Variance is used in calculations but harder to interpret."
-)
+col_risk1, col_risk2 = st.columns(2)
 
-use_variance = (risk_input_method == "Variance (σ²)")
+with col_risk1:
+    risk_metric = st.radio(
+        "Risk Metric:",
+        ["Standard Deviation (σ)", "Variance (σ²)"],
+        help="Standard deviation is more intuitive (same units as returns). Variance is used in calculations."
+    )
 
-# covariance/correlation matrix editor
-if use_variance:
-    st.markdown("#### Covariance Matrix (Variance on diagonal)")
+with col_risk2:
+    matrix_type = st.radio(
+        "Matrix Type:",
+        ["Correlation Matrix", "Covariance Matrix"],
+        help="Correlation (easier to interpret, values -1 to 1). Covariance (directly usable in calculations)."
+    )
+
+use_variance = (risk_metric == "Variance (σ²)")
+use_correlation = (matrix_type == "Correlation Matrix")
+
+# Input individual risk measures if using correlation matrix
+if use_correlation:
+    st.markdown(f"#### {'Standard Deviations' if not use_variance else 'Variances'}")
+    
+    # Initialize risk measures
+    if use_variance:
+        init_risk = np.diag(default_cov[:n_assets, :n_assets]) if n_assets <= default_cov.shape[0] else np.full(n_assets, 0.1**2)
+        risk_label = "Variance"
+    else:
+        init_risk = np.sqrt(np.diag(default_cov[:n_assets, :n_assets])) if n_assets <= default_cov.shape[0] else np.full(n_assets, 0.1)
+        risk_label = "StandardDeviation"
+    
+    if 'risk_measures' not in st.session_state or len(st.session_state.risk_measures) != n_assets:
+        st.session_state.risk_measures = init_risk.tolist()
+    
+    risk_df = pd.DataFrame({risk_label: st.session_state.risk_measures}, index=asset_names)
+    edited_risk = st.data_editor(risk_df, use_container_width=True, key="risk_editor")
+    st.session_state.risk_measures = edited_risk[risk_label].tolist()
+    risk_array = np.array(st.session_state.risk_measures)
+    
+    # Validate risk measures are positive
+    if np.any(risk_array <= 0):
+        st.error("All risk measures must be positive!")
+        st.stop()
+    
+    # Convert to standard deviations if variance was input
+    if use_variance:
+        std_array = np.sqrt(risk_array)
+    else:
+        std_array = risk_array
+    
+    st.markdown("#### Correlation Matrix")
+    
+    # Initialize correlation matrix from covariance if possible
+    if n_assets <= default_cov.shape[0]:
+        D_inv = np.diag(1.0 / np.sqrt(np.diag(default_cov[:n_assets, :n_assets])))
+        init_corr = D_inv @ default_cov[:n_assets, :n_assets] @ D_inv
+        # Clean up numerical errors
+        init_corr = np.clip(init_corr, -1, 1)
+        np.fill_diagonal(init_corr, 1.0)
+    else:
+        init_corr = np.eye(n_assets)
+    
+    if 'corr_matrix' not in st.session_state or st.session_state.corr_matrix.shape[0] != n_assets:
+        st.session_state.corr_matrix = init_corr
+    
+    # Create editable lower triangle only
+    corr_lower = np.tril(st.session_state.corr_matrix)
+    # Mask upper triangle for display
+    corr_display = st.session_state.corr_matrix.copy()
+    for i in range(n_assets):
+        for j in range(i+1, n_assets):
+            corr_display[i, j] = np.nan  # Gray out upper triangle
+    
+    corr_df = pd.DataFrame(corr_display, index=asset_names, columns=asset_names)
+    st.info("💡 Only fill the lower triangle (below diagonal). The matrix is symmetric, so upper triangle will auto-populate.")
+    edited_corr = st.data_editor(corr_df, use_container_width=True, key="corr_editor")
+    
+    # Extract lower triangle from edited data, mirror to upper triangle
+    corr_matrix_edited = edited_corr.to_numpy(dtype=float)
+    for i in range(n_assets):
+        for j in range(i+1, n_assets):
+            # Copy lower triangle to upper triangle
+            corr_matrix_edited[i, j] = corr_matrix_edited[j, i]
+    
+    st.session_state.corr_matrix = corr_matrix_edited
+    
+    # Convert correlation + std dev to covariance matrix
+    D = np.diag(std_array)
+    Sigma = D @ st.session_state.corr_matrix @ D
+    st.session_state.cov_matrix = Sigma
+
+else:
+    # Direct covariance matrix input
+    st.markdown("#### Covariance Matrix")
+    
     if n_assets <= default_cov.shape[0]:
         init_matrix = default_cov[:n_assets, :n_assets]
     else:
@@ -255,55 +338,32 @@ if use_variance:
         for i in range(default_cov.shape[0], n_assets):
             init_matrix[i, i] = 0.1**2
     
-    # Initialize session state for covariance
     if 'cov_matrix' not in st.session_state or st.session_state.cov_matrix.shape[0] != n_assets:
         st.session_state.cov_matrix = init_matrix
     
-    matrix_df = pd.DataFrame(st.session_state.cov_matrix, index=asset_names, columns=asset_names)
+    # Create editable lower triangle only
+    cov_display = st.session_state.cov_matrix.copy()
+    for i in range(n_assets):
+        for j in range(i+1, n_assets):
+            cov_display[i, j] = np.nan  # Gray out upper triangle
+    
+    matrix_df = pd.DataFrame(cov_display, index=asset_names, columns=asset_names)
+    st.info("💡 Only fill the lower triangle (below diagonal). The matrix is symmetric, so upper triangle will auto-populate.")
     edited_matrix = st.data_editor(matrix_df, use_container_width=True, key="cov_editor")
-    st.session_state.cov_matrix = edited_matrix.to_numpy(dtype=float)
+    
+    # Extract lower triangle, mirror to upper triangle
+    cov_matrix_edited = edited_matrix.to_numpy(dtype=float)
+    for i in range(n_assets):
+        for j in range(i+1, n_assets):
+            cov_matrix_edited[i, j] = cov_matrix_edited[j, i]
+    
+    st.session_state.cov_matrix = cov_matrix_edited
     Sigma = st.session_state.cov_matrix
-    
-else:
-    # Standard deviation + correlation approach
-    st.markdown("#### Standard Deviations")
-    
-    # Initialize std devs
-    init_std = np.sqrt(np.diag(default_cov[:n_assets, :n_assets])) if n_assets <= default_cov.shape[0] else np.full(n_assets, 0.1)
-    if 'std_devs' not in st.session_state or len(st.session_state.std_devs) != n_assets:
-        st.session_state.std_devs = init_std.tolist()
-    
-    std_df = pd.DataFrame({"StandardDeviation": st.session_state.std_devs}, index=asset_names)
-    edited_std = st.data_editor(std_df, use_container_width=True, key="std_editor")
-    st.session_state.std_devs = edited_std["StandardDeviation"].tolist()
-    std_array = np.array(st.session_state.std_devs)
-    
-    st.markdown("#### Correlation Matrix")
-    
-    # Initialize correlation matrix
-    if n_assets <= default_cov.shape[0]:
-        init_corr = np.corrcoef(default_cov[:n_assets, :n_assets])
-        if np.any(np.isnan(init_corr)):
-            init_corr = np.eye(n_assets)
-    else:
-        init_corr = np.eye(n_assets)
-    
-    if 'corr_matrix' not in st.session_state or st.session_state.corr_matrix.shape[0] != n_assets:
-        st.session_state.corr_matrix = init_corr
-    
-    corr_df = pd.DataFrame(st.session_state.corr_matrix, index=asset_names, columns=asset_names)
-    edited_corr = st.data_editor(corr_df, use_container_width=True, key="corr_editor")
-    st.session_state.corr_matrix = edited_corr.to_numpy(dtype=float)
-    
-    # Convert std dev + correlation to covariance matrix
-    D = np.diag(std_array)
-    Sigma = D @ st.session_state.corr_matrix @ D
-    st.session_state.cov_matrix = Sigma
 
 # parse inputs
 try:
-    mu = edited_mu["ExpectedReturn"].to_numpy(dtype=float)
-    Sigma = edited_cov.to_numpy(dtype=float)
+    mu = mu_edited["ExpectedReturn"].to_numpy(dtype=float)
+    # Sigma is already computed above based on input method
     
     # Validate dimensions
     if len(mu) != n_assets:
@@ -311,10 +371,55 @@ try:
     if Sigma.shape != (n_assets, n_assets):
         raise ValueError(f"Covariance matrix has shape {Sigma.shape}, expected ({n_assets}, {n_assets})")
     
+    # Additional validation for correlation-based input
+    if use_correlation:
+        # Check if correlation matrix is valid
+        if not np.allclose(st.session_state.corr_matrix, st.session_state.corr_matrix.T, atol=1e-8):
+            st.warning("⚠️ Correlation matrix is not symmetric. Auto-symmetrizing...")
+            st.session_state.corr_matrix = (st.session_state.corr_matrix + st.session_state.corr_matrix.T) / 2
+        
+        # Check correlation bounds
+        corr_diag = np.diag(st.session_state.corr_matrix)
+        if not np.allclose(corr_diag, 1.0, atol=1e-6):
+            st.warning("⚠️ Correlation matrix diagonal should be 1.0. Auto-correcting...")
+            np.fill_diagonal(st.session_state.corr_matrix, 1.0)
+        
+        corr_off_diag = st.session_state.corr_matrix[~np.eye(n_assets, dtype=bool)]
+        if np.any(np.abs(corr_off_diag) > 1.0):
+            raise ValueError("Correlation values must be between -1 and 1")
+        
+        # Recompute Sigma after corrections
+        D = np.diag(std_array)
+        Sigma = D @ st.session_state.corr_matrix @ D
+        st.session_state.cov_matrix = Sigma
+    
     # Check for positive definiteness (approximate)
     eigenvalues = np.linalg.eigvalsh(Sigma)
     if np.any(eigenvalues < -1e-8):
         st.warning("⚠️ Covariance matrix is not positive semi-definite. Adding small ridge for stability.")
+    
+    # Display summary statistics
+    with st.expander("📊 View Risk Summary Statistics"):
+        summary_stats = pd.DataFrame({
+            "Asset": asset_names,
+            "E[R]": mu,
+            "Std Dev (σ)": np.sqrt(np.diag(Sigma)),
+            "Variance (σ²)": np.diag(Sigma)
+        })
+        st.dataframe(summary_stats.style.format({
+            "E[R]": "{:.4f}",
+            "Std Dev (σ)": "{:.4f}",
+            "Variance (σ²)": "{:.6f}"
+        }), use_container_width=True)
+        
+        if use_correlation:
+            st.write("**Full Correlation Matrix (Symmetric):**")
+            corr_display = pd.DataFrame(st.session_state.corr_matrix, index=asset_names, columns=asset_names)
+            st.dataframe(corr_display.style.format("{:.3f}").background_gradient(cmap='RdYlGn', vmin=-1, vmax=1))
+        
+        st.write("**Full Covariance Matrix (Symmetric):**")
+        cov_display = pd.DataFrame(Sigma, index=asset_names, columns=asset_names)
+        st.dataframe(cov_display.style.format("{:.6f}"))
     
     # Check inputs with validation function
     _mu, _Sigma, _ones, _ = _check_inputs(mu, Sigma)
