@@ -1,4 +1,4 @@
-# app.py — Portfolio Optimizer (One-Fund, GMV, Tangency, Frontier) - DEBUGGED
+# app.py — Portfolio Optimizer (One-Fund, GMV, Tangency, Frontier) - DEBUGGED & ENHANCED
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
@@ -160,6 +160,34 @@ def efficient_frontier_long_only(mu, Sigma, n_points=60, theta_max_scale=50.0):
         W.append(w); R.append(m); S.append(s)
     return np.array(W), np.array(R), np.array(S)
 
+
+# ------------- UI HELPERS -------------
+def delete_assets(assets_to_delete):
+    """Helper to remove selected assets from all session_state variables."""
+    if not assets_to_delete:
+        return
+
+    current_names = st.session_state.asset_names
+    indices_to_delete = [current_names.index(name) for name in assets_to_delete]
+    
+    # Update names, mu, and risk_measures
+    st.session_state.asset_names = [name for i, name in enumerate(current_names) if i not in indices_to_delete]
+    st.session_state.mu_values = [mu for i, mu in enumerate(st.session_state.mu_values) if i not in indices_to_delete]
+    if 'risk_measures' in st.session_state:
+        st.session_state.risk_measures = [r for i, r in enumerate(st.session_state.risk_measures) if i not in indices_to_delete]
+
+    # Update matrices by deleting rows and columns
+    if 'cov_matrix' in st.session_state:
+        mat = np.delete(st.session_state.cov_matrix, indices_to_delete, axis=0)
+        mat = np.delete(mat, indices_to_delete, axis=1)
+        st.session_state.cov_matrix = mat
+    if 'corr_matrix' in st.session_state:
+        mat = np.delete(st.session_state.corr_matrix, indices_to_delete, axis=0)
+        mat = np.delete(mat, indices_to_delete, axis=1)
+        st.session_state.corr_matrix = mat
+    
+    st.toast(f"Deleted assets: {', '.join(assets_to_delete)}", icon="🗑️")
+
 # ------------- UI -------------
 st.set_page_config(page_title="Portfolio Optimizer", layout="wide")
 st.title("📈 Portfolio Optimizer")
@@ -192,18 +220,21 @@ default_cov = np.array([
 
 col_a, col_b = st.columns([1, 1])
 with col_a:
-    n_assets = st.number_input("Number of assets", min_value=1, max_value=50, value=4, step=1)
+    n_assets_input = st.number_input("Number of assets", min_value=1, max_value=50, value=4, step=1, key="n_assets_widget")
+    n_assets = n_assets_input
+    
     # asset names editor
-    if n_assets <= len(default_assets):
-        names_list = default_assets[:n_assets]
-    else:
-        extra = [f"Asset_{chr(65+i)}" for i in range(len(default_assets), n_assets)]
-        names_list = default_assets + extra
-    
-    # Initialize session state for names if not exists
     if 'asset_names' not in st.session_state or len(st.session_state.asset_names) != n_assets:
-        st.session_state.asset_names = names_list
-    
+        if 'asset_names' in st.session_state and len(st.session_state.asset_names) < n_assets:
+            # If adding assets, extend existing names
+            current_len = len(st.session_state.asset_names)
+            extra = [f"Asset_{chr(65+i)}" for i in range(current_len, n_assets)]
+            st.session_state.asset_names.extend(extra)
+        else:
+            # Full reset or initialization
+            names_list = default_assets[:n_assets] if n_assets <= len(default_assets) else default_assets + [f"Asset_{chr(65+i)}" for i in range(len(default_assets), n_assets)]
+            st.session_state.asset_names = names_list
+
     names_df = pd.DataFrame({"Asset": st.session_state.asset_names})
     edited_names = st.data_editor(names_df, use_container_width=True, hide_index=True, key="names_editor")
     asset_names = [str(x).strip() for x in edited_names["Asset"].tolist()]
@@ -220,12 +251,23 @@ with col_a:
     
     st.session_state.asset_names = asset_names
 
+    # --- NEW: Delete Assets Section ---
+    with st.expander("🗑️ Delete Assets"):
+        assets_to_delete = st.multiselect(
+            "Select assets to remove:",
+            options=st.session_state.asset_names,
+            key="delete_multiselect"
+        )
+        if st.button("Delete Selected Assets", disabled=not assets_to_delete):
+            delete_assets(assets_to_delete)
+            # Update the number of assets widget and rerun
+            st.session_state.n_assets_widget = len(st.session_state.asset_names)
+            st.rerun()
+
 with col_b:
     # expected returns vector editor
-    init_mu = default_mu[:n_assets] if n_assets <= len(default_mu) else default_mu + [0.08]*(n_assets-len(default_mu))
-    
-    # Initialize session state for mu if not exists
     if 'mu_values' not in st.session_state or len(st.session_state.mu_values) != n_assets:
+        init_mu = default_mu[:n_assets] if n_assets <= len(default_mu) else default_mu + [0.08]*(n_assets-len(default_mu))
         st.session_state.mu_values = init_mu
     
     mu_df = pd.DataFrame({"ExpectedReturn": st.session_state.mu_values}, index=asset_names)
@@ -258,16 +300,14 @@ if use_correlation:
     st.markdown(f"#### {'Standard Deviations' if not use_variance else 'Variances'}")
     
     # Initialize risk measures
-    if use_variance:
-        init_risk = np.diag(default_cov[:n_assets, :n_assets]) if n_assets <= default_cov.shape[0] else np.full(n_assets, 0.1**2)
-        risk_label = "Variance"
-    else:
-        init_risk = np.sqrt(np.diag(default_cov[:n_assets, :n_assets])) if n_assets <= default_cov.shape[0] else np.full(n_assets, 0.1)
-        risk_label = "StandardDeviation"
-    
     if 'risk_measures' not in st.session_state or len(st.session_state.risk_measures) != n_assets:
+        if use_variance:
+            init_risk = np.diag(default_cov[:n_assets, :n_assets]) if n_assets <= default_cov.shape[0] else np.full(n_assets, 0.1**2)
+        else:
+            init_risk = np.sqrt(np.diag(default_cov[:n_assets, :n_assets])) if n_assets <= default_cov.shape[0] else np.full(n_assets, 0.1)
         st.session_state.risk_measures = init_risk.tolist()
     
+    risk_label = "Variance" if use_variance else "StandardDeviation"
     risk_df = pd.DataFrame({risk_label: st.session_state.risk_measures}, index=asset_names)
     edited_risk = st.data_editor(risk_df, use_container_width=True, key="risk_editor")
     st.session_state.risk_measures = edited_risk[risk_label].tolist()
@@ -279,29 +319,22 @@ if use_correlation:
         st.stop()
     
     # Convert to standard deviations if variance was input
-    if use_variance:
-        std_array = np.sqrt(risk_array)
-    else:
-        std_array = risk_array
+    std_array = np.sqrt(risk_array) if use_variance else risk_array
     
     st.markdown("#### Correlation Matrix")
     
     # Initialize correlation matrix from covariance if possible
-    if n_assets <= default_cov.shape[0]:
-        D_inv = np.diag(1.0 / np.sqrt(np.diag(default_cov[:n_assets, :n_assets])))
-        init_corr = D_inv @ default_cov[:n_assets, :n_assets] @ D_inv
-        # Clean up numerical errors
-        init_corr = np.clip(init_corr, -1, 1)
-        np.fill_diagonal(init_corr, 1.0)
-    else:
-        init_corr = np.eye(n_assets)
-    
     if 'corr_matrix' not in st.session_state or st.session_state.corr_matrix.shape[0] != n_assets:
+        if n_assets <= default_cov.shape[0]:
+            D_inv = np.diag(1.0 / np.sqrt(np.diag(default_cov[:n_assets, :n_assets])))
+            init_corr = D_inv @ default_cov[:n_assets, :n_assets] @ D_inv
+            init_corr = np.clip(init_corr, -1, 1)
+            np.fill_diagonal(init_corr, 1.0)
+        else:
+            init_corr = np.eye(n_assets)
         st.session_state.corr_matrix = init_corr
     
     # Create editable lower triangle only
-    corr_lower = np.tril(st.session_state.corr_matrix)
-    # Mask upper triangle for display
     corr_display = st.session_state.corr_matrix.copy()
     for i in range(n_assets):
         for j in range(i+1, n_assets):
@@ -312,11 +345,11 @@ if use_correlation:
     edited_corr = st.data_editor(corr_df, use_container_width=True, key="corr_editor")
     
     # Extract lower triangle from edited data, mirror to upper triangle
-    corr_matrix_edited = edited_corr.to_numpy(dtype=float)
+    corr_matrix_edited = edited_corr.to_numpy(dtype=float, na_value=0) # Use na_value to handle grayed cells
     for i in range(n_assets):
-        for j in range(i+1, n_assets):
-            # Copy lower triangle to upper triangle
-            corr_matrix_edited[i, j] = corr_matrix_edited[j, i]
+        for j in range(i + 1, n_assets):
+            corr_matrix_edited[i, j] = corr_matrix_edited[j, i] # Mirror
+    np.fill_diagonal(corr_matrix_edited, 1.0) # Ensure diagonal is 1
     
     st.session_state.corr_matrix = corr_matrix_edited
     
@@ -329,16 +362,10 @@ else:
     # Direct covariance matrix input
     st.markdown("#### Covariance Matrix")
     
-    if n_assets <= default_cov.shape[0]:
-        init_matrix = default_cov[:n_assets, :n_assets]
-    else:
-        init_matrix = np.zeros((n_assets, n_assets))
+    if 'cov_matrix' not in st.session_state or st.session_state.cov_matrix.shape[0] != n_assets:
+        init_matrix = np.eye(n_assets) * (0.1**2)
         old_size = min(default_cov.shape[0], n_assets)
         init_matrix[:old_size, :old_size] = default_cov[:old_size, :old_size]
-        for i in range(default_cov.shape[0], n_assets):
-            init_matrix[i, i] = 0.1**2
-    
-    if 'cov_matrix' not in st.session_state or st.session_state.cov_matrix.shape[0] != n_assets:
         st.session_state.cov_matrix = init_matrix
     
     # Create editable lower triangle only
@@ -352,10 +379,10 @@ else:
     edited_matrix = st.data_editor(matrix_df, use_container_width=True, key="cov_editor")
     
     # Extract lower triangle, mirror to upper triangle
-    cov_matrix_edited = edited_matrix.to_numpy(dtype=float)
+    cov_matrix_edited = edited_matrix.to_numpy(dtype=float, na_value=0) # Use na_value to handle grayed cells
     for i in range(n_assets):
-        for j in range(i+1, n_assets):
-            cov_matrix_edited[i, j] = cov_matrix_edited[j, i]
+        for j in range(i + 1, n_assets):
+            cov_matrix_edited[i, j] = cov_matrix_edited[j, i] # Mirror
     
     st.session_state.cov_matrix = cov_matrix_edited
     Sigma = st.session_state.cov_matrix
@@ -620,42 +647,48 @@ if run:
                 st.write("**Last 10 Points:**")
                 st.dataframe(tbl.tail(10).style.format({"E[R]":"{:.4f}", "σ":"{:.4f}", "Sharpe":"{:.4f}"}))
 
-            # Plot frontier
-            fig = plt.figure(figsize=(10, 6))
-            plt.scatter(S, R, s=20, alpha=0.6, c=R, cmap='viridis')
-            plt.colorbar(label='Expected Return')
-            plt.xlabel("σ (Standard Deviation)", fontsize=12)
-            plt.ylabel("E[R] (Expected Return)", fontsize=12)
-            plt.title("Efficient Frontier" + (" — Long-only" if long_only else " — Unconstrained"), fontsize=14)
-            plt.grid(alpha=0.3)
-            plt.tight_layout()
-            st.pyplot(fig)
-
             # Also mark GMV and Tangency on the plot
             try:
-                with st.spinner("Adding GMV and Tangency portfolios to plot..."):
+                with st.spinner("Adding GMV, Tangency, and Individual Assets to plot..."):
+                    # Calculate GMV and Tangency
                     w_gmv = gmv_long_only(Sigma) if long_only else gmv_unconstrained(Sigma)
                     mg, sg, *_ = portfolio_stats(w_gmv, _mu, _Sigma)
                     w_tan = tangency_long_only(mu, Sigma, rf) if long_only else tangency_unconstrained(mu, Sigma, rf)
                     mt, stdev_t, *_ = portfolio_stats(w_tan, _mu, _Sigma)
                     sharpe_tan = (mt - rf) / stdev_t if stdev_t > 0 else np.nan
 
+                    # --- NEW: Enhanced Plotting Section ---
                     fig2 = plt.figure(figsize=(10, 6))
-                    plt.scatter(S, R, s=20, alpha=0.4, c=R, cmap='viridis', label="Efficient Frontier")
-                    plt.scatter([sg], [mg], marker="D", s=150, c='red', edgecolors='black', linewidths=2, label=f"GMV (σ={sg:.4f})", zorder=5)
-                    plt.scatter([stdev_t], [mt], marker="*", s=300, c='gold', edgecolors='black', linewidths=2, label=f"Tangency (Sharpe={sharpe_tan:.4f})", zorder=5)
+                    ax = fig2.add_subplot(1, 1, 1)
+
+                    # 1. Plot the Efficient Frontier
+                    plt.scatter(S, R, s=20, alpha=0.6, c=sharpe_ratios, cmap='viridis', label="Efficient Frontier Points")
+                    plt.colorbar(label='Sharpe Ratio')
                     
-                    # Draw capital allocation line
+                    # 2. Plot GMV and Tangency
+                    plt.scatter([sg], [mg], marker="D", s=150, c='red', edgecolors='black', linewidths=1.5, label=f"GMV (σ={sg:.4f})", zorder=5)
+                    plt.scatter([stdev_t], [mt], marker="*", s=300, c='gold', edgecolors='black', linewidths=1.5, label=f"Tangency (Sharpe={sharpe_tan:.4f})", zorder=5)
+                    
+                    # 3. Plot Individual Assets
+                    individual_s = np.sqrt(np.diag(_Sigma))
+                    individual_r = _mu.flatten()
+                    plt.scatter(individual_s, individual_r, marker='o', s=120, c='grey', alpha=0.9, edgecolors='black', label='Individual Assets', zorder=4)
+                    for i, name in enumerate(asset_names):
+                        ax.annotate(name, (individual_s[i], individual_r[i]),
+                                    xytext=(5, -5), textcoords='offset points', ha='left', va='top',
+                                    bbox=dict(boxstyle='round,pad=0.3', fc='white', alpha=0.5))
+                    
+                    # 4. Draw Capital Allocation Line
                     if stdev_t > 0:
                         x_cal = np.array([0, stdev_t * 1.5])
                         y_cal = rf + (mt - rf) / stdev_t * x_cal
-                        plt.plot(x_cal, y_cal, 'k--', alpha=0.5, label='Capital Allocation Line')
+                        plt.plot(x_cal, y_cal, 'k--', alpha=0.7, label='Capital Allocation Line')
                     
                     plt.xlabel("σ (Standard Deviation)", fontsize=12)
                     plt.ylabel("E[R] (Expected Return)", fontsize=12)
                     plt.legend(loc='best')
-                    plt.title("Efficient Frontier with Key Portfolios", fontsize=14)
-                    plt.grid(alpha=0.3)
+                    plt.title("Efficient Frontier with Key Portfolios & Individual Assets", fontsize=14)
+                    plt.grid(alpha=0.4)
                     plt.tight_layout()
                     st.pyplot(fig2)
                     
@@ -664,13 +697,23 @@ if run:
                         "Portfolio": ["GMV", "Tangency"],
                         "E[R]": [mg, mt],
                         "σ": [sg, stdev_t],
-                        "Sharpe": [np.nan, sharpe_tan]
+                        "Sharpe": [(mg-rf)/sg if sg > 0 else np.nan, sharpe_tan]
                     })
                     st.write("**Key Portfolio Metrics:**")
                     st.dataframe(summary.style.format({"E[R]": "{:.4f}", "σ": "{:.4f}", "Sharpe": "{:.4f}"}))
                     
             except Exception as e:
-                st.warning(f"⚠️ Could not compute GMV/Tangency for plot overlay: {e}")
+                st.warning(f"⚠️ Could not compute GMV/Tangency/Assets for plot overlay: {e}")
+                # Fallback to simple plot if the enhanced one fails
+                fig_simple = plt.figure(figsize=(10, 6))
+                plt.scatter(S, R, s=20, alpha=0.6, c=R, cmap='viridis')
+                plt.colorbar(label='Expected Return')
+                plt.xlabel("σ (Standard Deviation)", fontsize=12)
+                plt.ylabel("E[R] (Expected Return)", fontsize=12)
+                plt.title("Efficient Frontier" + (" — Long-only" if long_only else " — Unconstrained"), fontsize=14)
+                plt.grid(alpha=0.3)
+                plt.tight_layout()
+                st.pyplot(fig_simple)
 
         except Exception as e:
             st.error(f"❌ Frontier computation failed: {e}")
