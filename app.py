@@ -1,4 +1,4 @@
-# app.py — Portfolio Optimizer (One-Fund, GMV, Tangency, Frontier)
+# app.py — Portfolio Optimizer (One-Fund, GMV, Tangency, Frontier) - DEBUGGED
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
@@ -15,7 +15,7 @@ def _check_inputs(mu, Sigma, ridge=1e-10):
     Sigma = np.asarray(Sigma, dtype=float)
     n = mu.shape[0]
     if Sigma.shape != (n, n):
-        raise ValueError("Covariance must be n×n with n = len(mu).")
+        raise ValueError(f"Covariance must be n×n with n = len(mu). Got Sigma shape {Sigma.shape} but mu length {n}.")
     # Symmetrize + tiny ridge for stability
     if not np.allclose(Sigma, Sigma.T, atol=1e-10):
         Sigma = (Sigma + Sigma.T) / 2
@@ -33,6 +33,10 @@ def portfolio_stats(w, mu, Sigma):
 # ------------- optimizers -------------
 def one_fund_single_risky(mu_s, rf, sigma_s, A):
     # w* in risky = (mu_s - rf) / (A sigma_s^2)
+    if sigma_s <= 0:
+        raise ValueError("Standard deviation must be positive")
+    if A <= 0:
+        raise ValueError("Risk aversion must be positive")
     w_star = (mu_s - rf) / (A * sigma_s**2)
     mu_p = w_star * mu_s + (1 - w_star) * rf
     sigma_p = abs(w_star) * sigma_s
@@ -59,7 +63,7 @@ def gmv_long_only(Sigma, starts=30, maxiter=800):
     for z in seeds:
         z = z / z.sum()
         res = minimize(obj, z, method="SLSQP", bounds=bounds, constraints=cons,
-                       options={"maxiter": maxiter})
+                       options={"maxiter": maxiter, "ftol": 1e-9})
         if res.success and (best is None or res.fun < best.fun):
             best = res
     if best is None:
@@ -89,7 +93,7 @@ def tangency_long_only(mu, Sigma, rf, starts=30, maxiter=800):
     for z in seeds:
         z = z / z.sum()
         res = minimize(neg_sharpe, z, method="SLSQP",
-                       bounds=bounds, constraints=cons, options={"maxiter": maxiter})
+                       bounds=bounds, constraints=cons, options={"maxiter": maxiter, "ftol": 1e-9})
         if res.success and (best is None or res.fun < best.fun):
             best = res
     if best is None:
@@ -103,6 +107,8 @@ def min_var_for_target_return_unconstrained(mu, Sigma, target):
     B = float(ones.T @ inv @ mu)
     C = float(mu.T   @ inv @ mu)
     D = A*C - B**2
+    if abs(D) < 1e-12:
+        raise ValueError("Degenerate covariance structure (D ≈ 0)")
     lam = (C - B*target) / D
     gamma = (A*target - B) / D
     w = lam * (inv @ ones) + gamma * (inv @ mu)
@@ -115,9 +121,12 @@ def efficient_frontier_unconstrained(mu, Sigma, n_points=60, ret_range=None):
     targets = np.linspace(lo, hi, n_points)
     W, R, S = [], [], []
     for t in targets:
-        w = min_var_for_target_return_unconstrained(mu, Sigma, t)
-        m, s, _, _ = portfolio_stats(w, mu, Sigma)
-        W.append(w); R.append(m); S.append(s)
+        try:
+            w = min_var_for_target_return_unconstrained(mu, Sigma, t)
+            m, s, _, _ = portfolio_stats(w, mu, Sigma)
+            W.append(w); R.append(m); S.append(s)
+        except Exception:
+            continue  # Skip problematic points
     return np.array(W), np.array(R), np.array(S)
 
 def efficient_frontier_long_only(mu, Sigma, n_points=60, theta_max_scale=50.0):
@@ -139,7 +148,7 @@ def efficient_frontier_long_only(mu, Sigma, n_points=60, theta_max_scale=50.0):
         for z in [w_start, rng.random(n)]:
             z = z / z.sum()
             res = minimize(obj, z, method="SLSQP", bounds=bounds, constraints=cons,
-                           options={"maxiter": 800})
+                           options={"maxiter": 800, "ftol": 1e-9})
             if res.success and (best is None or res.fun < best.fun):
                 best = res
         if best is None:
@@ -186,20 +195,42 @@ with col_a:
     n_assets = st.number_input("Number of assets", min_value=1, max_value=50, value=4, step=1)
     # asset names editor
     if n_assets <= len(default_assets):
-        names_df = pd.DataFrame({"Asset": default_assets[:n_assets]})
+        names_list = default_assets[:n_assets]
     else:
-        extra = [f"Asset_{i+1}" for i in range(len(default_assets), n_assets)]
-        names_df = pd.DataFrame({"Asset": default_assets + extra[:n_assets-len(default_assets)]})
-    names_df = st.data_editor(names_df, use_container_width=True, num_rows="dynamic", key="names_editor")
-    asset_names = [str(x).strip() for x in names_df["Asset"].tolist()]
+        extra = [f"Asset_{chr(65+i)}" for i in range(len(default_assets), n_assets)]
+        names_list = default_assets + extra
+    
+    # Initialize session state for names if not exists
+    if 'asset_names' not in st.session_state or len(st.session_state.asset_names) != n_assets:
+        st.session_state.asset_names = names_list
+    
+    names_df = pd.DataFrame({"Asset": st.session_state.asset_names})
+    edited_names = st.data_editor(names_df, use_container_width=True, hide_index=True, key="names_editor")
+    asset_names = [str(x).strip() for x in edited_names["Asset"].tolist()]
+    
+    # Validation: check for duplicates
     if len(asset_names) != len(set(asset_names)):
-        st.warning("Asset names must be unique.")
+        st.error("⚠️ Asset names must be unique!")
+        st.stop()
+    
+    # Validation: check for empty names
+    if any(name == "" for name in asset_names):
+        st.error("⚠️ Asset names cannot be empty!")
+        st.stop()
+    
+    st.session_state.asset_names = asset_names
 
 with col_b:
     # expected returns vector editor
     init_mu = default_mu[:n_assets] if n_assets <= len(default_mu) else default_mu + [0.08]*(n_assets-len(default_mu))
-    mu_df = pd.DataFrame({"ExpectedReturn": init_mu}, index=asset_names)
-    mu_df = st.data_editor(mu_df, use_container_width=True, key="mu_editor")
+    
+    # Initialize session state for mu if not exists
+    if 'mu_values' not in st.session_state or len(st.session_state.mu_values) != n_assets:
+        st.session_state.mu_values = init_mu
+    
+    mu_df = pd.DataFrame({"ExpectedReturn": st.session_state.mu_values}, index=asset_names)
+    edited_mu = st.data_editor(mu_df, use_container_width=True, key="mu_editor")
+    st.session_state.mu_values = edited_mu["ExpectedReturn"].tolist()
 
 # covariance matrix editor (grid)
 st.markdown("#### Covariance Matrix")
@@ -208,21 +239,42 @@ if n_assets <= default_cov.shape[0]:
 else:
     # expand with small values on diagonal
     init_cov = np.zeros((n_assets, n_assets))
-    init_cov[:default_cov.shape[0], :default_cov.shape[1]] = default_cov
+    old_size = min(default_cov.shape[0], n_assets)
+    init_cov[:old_size, :old_size] = default_cov[:old_size, :old_size]
     for i in range(default_cov.shape[0], n_assets):
         init_cov[i, i] = 0.1**2
-cov_df = pd.DataFrame(init_cov, index=asset_names, columns=asset_names)
-cov_df = st.data_editor(cov_df, use_container_width=True, key="cov_editor")
+
+# Initialize session state for covariance if not exists or wrong size
+if 'cov_matrix' not in st.session_state or st.session_state.cov_matrix.shape[0] != n_assets:
+    st.session_state.cov_matrix = init_cov
+
+cov_df = pd.DataFrame(st.session_state.cov_matrix, index=asset_names, columns=asset_names)
+edited_cov = st.data_editor(cov_df, use_container_width=True, key="cov_editor")
+
+# Update session state
+st.session_state.cov_matrix = edited_cov.to_numpy(dtype=float)
 
 # parse inputs
 try:
-    mu = mu_df["ExpectedReturn"].to_numpy(dtype=float)
-    Sigma = cov_df.reindex(index=asset_names, columns=asset_names).to_numpy(dtype=float)
-    # quick checks
-    _mu, _Sigma, _ones, _ = _check_inputs(mu, Sigma)  # raises if bad
+    mu = edited_mu["ExpectedReturn"].to_numpy(dtype=float)
+    Sigma = edited_cov.to_numpy(dtype=float)
+    
+    # Validate dimensions
+    if len(mu) != n_assets:
+        raise ValueError(f"Expected returns vector has {len(mu)} entries, expected {n_assets}")
+    if Sigma.shape != (n_assets, n_assets):
+        raise ValueError(f"Covariance matrix has shape {Sigma.shape}, expected ({n_assets}, {n_assets})")
+    
+    # Check for positive definiteness (approximate)
+    eigenvalues = np.linalg.eigvalsh(Sigma)
+    if np.any(eigenvalues < -1e-8):
+        st.warning("⚠️ Covariance matrix is not positive semi-definite. Adding small ridge for stability.")
+    
+    # Check inputs with validation function
+    _mu, _Sigma, _ones, _ = _check_inputs(mu, Sigma)
     valid_inputs = True
 except Exception as e:
-    st.error(f"Input issue: {e}")
+    st.error(f"❌ Input validation failed: {e}")
     valid_inputs = False
 
 # extra inputs for One-fund (single risky)
@@ -232,94 +284,205 @@ if opt == "One-Fund (single risky + rf)":
     with c1:
         mu_s = st.number_input("Risky asset expected return (μ_s)", value=0.10, step=0.005, format="%.4f")
     with c2:
-        sigma_s = st.number_input("Risky asset stdev (σ_s)", value=0.20, step=0.01, format="%.4f")
+        sigma_s = st.number_input("Risky asset stdev (σ_s)", value=0.20, min_value=0.0001, step=0.01, format="%.4f")
     with c3:
-        A = st.number_input("Risk aversion (A)", value=3.0, step=0.5, format="%.2f")
+        A = st.number_input("Risk aversion (A)", value=3.0, min_value=0.01, step=0.5, format="%.2f")
 
 # ------------- Run -------------
 st.subheader("3) Results")
-run = st.button("Compute")
+run = st.button("🚀 Compute", type="primary")
 
 if run:
     if opt == "One-Fund (single risky + rf)":
         try:
             w_star, mu_p, sigma_p = one_fund_single_risky(mu_s, rf, sigma_s, A)
-            st.write(f"**Optimal risky weight** w* = `{w_star:.4f}`")
-            st.write(f"**Portfolio E[R]** = `{mu_p:.4f}`   |   **Portfolio σ** = `{sigma_p:.4f}`")
-            st.info("Interpretation: Invest w* in the risky asset and (1−w*) in the risk-free asset.")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Optimal Risky Weight (w*)", f"{w_star:.4f}")
+            with col2:
+                st.metric("Portfolio E[R]", f"{mu_p:.4f}")
+            with col3:
+                st.metric("Portfolio σ", f"{sigma_p:.4f}")
+            
+            # Visual explanation
+            investment_breakdown = pd.DataFrame({
+                "Asset": ["Risky Asset", "Risk-Free Asset"],
+                "Weight": [w_star, 1 - w_star],
+                "Allocation %": [w_star * 100, (1 - w_star) * 100]
+            })
+            st.dataframe(investment_breakdown.style.format({"Weight": "{:.4f}", "Allocation %": "{:.2f}%"}))
+            
+            st.info(f"💡 **Interpretation:** Invest {w_star*100:.2f}% in the risky asset and {(1-w_star)*100:.2f}% in the risk-free asset.")
         except Exception as e:
-            st.error(f"Computation failed: {e}")
+            st.error(f"❌ Computation failed: {e}")
 
     elif opt == "Global Minimum-Variance (GMV)":
-        if not valid_inputs: st.stop()
+        if not valid_inputs: 
+            st.error("Please fix input errors above before computing.")
+            st.stop()
         try:
-            if long_only:
-                w = gmv_long_only(Sigma)
-            else:
-                w = gmv_unconstrained(Sigma)
+            with st.spinner("Computing GMV portfolio..."):
+                if long_only:
+                    w = gmv_long_only(Sigma)
+                else:
+                    w = gmv_unconstrained(Sigma)
+            
             m, s, _, _ = portfolio_stats(w, _mu, _Sigma)
-            out = pd.DataFrame({"Weight": w}, index=asset_names)
-            st.write("**GMV weights**")
-            st.dataframe(out.style.format("{:.4f}"))
-            st.write(f"**GMV E[R]** = `{m:.4f}`   |   **GMV σ** = `{s:.4f}`")
+            
+            # Display metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("GMV E[R]", f"{m:.4f}")
+            with col2:
+                st.metric("GMV σ", f"{s:.4f}")
+            with col3:
+                st.metric("Sum of Weights", f"{w.sum():.4f}")
+            
+            # Show weights table
+            out = pd.DataFrame({"Weight": w, "Allocation %": w * 100}, index=asset_names)
+            out = out.sort_values("Weight", ascending=False)
+            st.write("**GMV Portfolio Weights**")
+            st.dataframe(out.style.format({"Weight": "{:.4f}", "Allocation %": "{:.2f}%"}), use_container_width=True)
+            
+            # Visualization
+            fig, ax = plt.subplots(figsize=(8, 4))
+            colors = plt.cm.Set3(np.linspace(0, 1, len(asset_names)))
+            bars = ax.barh(asset_names, w, color=colors)
+            ax.set_xlabel("Weight")
+            ax.set_title("GMV Portfolio Allocation")
+            ax.axvline(0, color='black', linewidth=0.5)
+            plt.tight_layout()
+            st.pyplot(fig)
+            
         except Exception as e:
-            st.error(f"GMV optimization failed: {e}")
+            st.error(f"❌ GMV optimization failed: {e}")
 
     elif opt == "Tangency / Max-Sharpe":
-        if not valid_inputs: st.stop()
+        if not valid_inputs: 
+            st.error("Please fix input errors above before computing.")
+            st.stop()
         try:
-            if long_only:
-                w = tangency_long_only(mu, Sigma, rf)
-            else:
-                w = tangency_unconstrained(mu, Sigma, rf)
+            with st.spinner("Computing Tangency portfolio..."):
+                if long_only:
+                    w = tangency_long_only(mu, Sigma, rf)
+                else:
+                    w = tangency_unconstrained(mu, Sigma, rf)
+            
             m, s, _, _ = portfolio_stats(w, _mu, _Sigma)
             sharpe = (m - rf) / s if s > 0 else np.nan
-            out = pd.DataFrame({"Weight": w}, index=asset_names)
-            st.write("**Tangency weights**")
-            st.dataframe(out.style.format("{:.4f}"))
-            st.write(f"**E[R]** = `{m:.4f}`   |   **σ** = `{s:.4f}`   |   **Sharpe** = `{sharpe:.4f}` (rf={rf:.4f})")
+            
+            # Display metrics
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("E[R]", f"{m:.4f}")
+            with col2:
+                st.metric("σ", f"{s:.4f}")
+            with col3:
+                st.metric("Sharpe Ratio", f"{sharpe:.4f}")
+            with col4:
+                st.metric("Sum of Weights", f"{w.sum():.4f}")
+            
+            # Show weights table
+            out = pd.DataFrame({"Weight": w, "Allocation %": w * 100}, index=asset_names)
+            out = out.sort_values("Weight", ascending=False)
+            st.write("**Tangency Portfolio Weights**")
+            st.dataframe(out.style.format({"Weight": "{:.4f}", "Allocation %": "{:.2f}%"}), use_container_width=True)
+            
+            # Visualization
+            fig, ax = plt.subplots(figsize=(8, 4))
+            colors = plt.cm.Set3(np.linspace(0, 1, len(asset_names)))
+            bars = ax.barh(asset_names, w, color=colors)
+            ax.set_xlabel("Weight")
+            ax.set_title(f"Tangency Portfolio Allocation (Sharpe = {sharpe:.4f})")
+            ax.axvline(0, color='black', linewidth=0.5)
+            plt.tight_layout()
+            st.pyplot(fig)
+            
         except Exception as e:
-            st.error(f"Tangency optimization failed: {e}")
+            st.error(f"❌ Tangency optimization failed: {e}")
 
     elif opt == "Efficient Frontier":
-        if not valid_inputs: st.stop()
+        if not valid_inputs: 
+            st.error("Please fix input errors above before computing.")
+            st.stop()
         try:
-            if long_only:
-                W, R, S = efficient_frontier_long_only(mu, Sigma, n_points=n_points)
-            else:
-                W, R, S = efficient_frontier_unconstrained(mu, Sigma, n_points=n_points)
+            with st.spinner("Computing Efficient Frontier..."):
+                if long_only:
+                    W, R, S = efficient_frontier_long_only(mu, Sigma, n_points=n_points)
+                else:
+                    W, R, S = efficient_frontier_unconstrained(mu, Sigma, n_points=n_points)
+
+            if len(R) == 0:
+                st.error("❌ Failed to compute any frontier points.")
+                st.stop()
 
             # Show a few points
             tbl = pd.DataFrame({"E[R]": R, "σ": S})
-            st.write("**Frontier sample (first 10 points)**")
-            st.dataframe(tbl.head(10).style.format({"E[R]":"{:.4f}", "σ":"{:.4f}"}))
+            st.write(f"**Frontier Points Computed:** {len(R)}")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**First 10 Points:**")
+                st.dataframe(tbl.head(10).style.format({"E[R]":"{:.4f}", "σ":"{:.4f}"}))
+            with col2:
+                st.write("**Last 10 Points:**")
+                st.dataframe(tbl.tail(10).style.format({"E[R]":"{:.4f}", "σ":"{:.4f}"}))
 
-            # Plot
-            fig = plt.figure(figsize=(6,4))
-            plt.scatter(S, R, s=15)
-            plt.xlabel("σ (Std Dev)")
-            plt.ylabel("E[R]")
-            plt.title("Efficient Frontier" + (" — Long-only" if long_only else " — Unconstrained"))
+            # Plot frontier
+            fig = plt.figure(figsize=(10, 6))
+            plt.scatter(S, R, s=20, alpha=0.6, c=R, cmap='viridis')
+            plt.colorbar(label='Expected Return')
+            plt.xlabel("σ (Standard Deviation)", fontsize=12)
+            plt.ylabel("E[R] (Expected Return)", fontsize=12)
+            plt.title("Efficient Frontier" + (" — Long-only" if long_only else " — Unconstrained"), fontsize=14)
+            plt.grid(alpha=0.3)
+            plt.tight_layout()
             st.pyplot(fig)
 
-            # Also mark GMV and Tangency on the plot (if solvable)
+            # Also mark GMV and Tangency on the plot
             try:
-                w_gmv = gmv_long_only(Sigma) if long_only else gmv_unconstrained(Sigma)
-                mg, sg, *_ = portfolio_stats(w_gmv, _mu, _Sigma)
-                w_tan = tangency_long_only(mu, Sigma, rf) if long_only else tangency_unconstrained(mu, Sigma, rf)
-                mt, stdev_t, *_ = portfolio_stats(w_tan, _mu, _Sigma)
+                with st.spinner("Adding GMV and Tangency portfolios to plot..."):
+                    w_gmv = gmv_long_only(Sigma) if long_only else gmv_unconstrained(Sigma)
+                    mg, sg, *_ = portfolio_stats(w_gmv, _mu, _Sigma)
+                    w_tan = tangency_long_only(mu, Sigma, rf) if long_only else tangency_unconstrained(mu, Sigma, rf)
+                    mt, stdev_t, *_ = portfolio_stats(w_tan, _mu, _Sigma)
+                    sharpe_tan = (mt - rf) / stdev_t if stdev_t > 0 else np.nan
 
-                fig2 = plt.figure(figsize=(6,4))
-                plt.scatter(S, R, s=15, label="Frontier")
-                plt.scatter([sg],[mg], marker="D", s=60, label="GMV")
-                plt.scatter([stdev_t],[mt], marker="*", s=120, label="Tangency")
-                plt.xlabel("σ (Std Dev)")
-                plt.ylabel("E[R]")
-                plt.legend()
-                plt.title("Frontier with GMV & Tangency")
-                st.pyplot(fig2)
+                    fig2 = plt.figure(figsize=(10, 6))
+                    plt.scatter(S, R, s=20, alpha=0.4, c=R, cmap='viridis', label="Efficient Frontier")
+                    plt.scatter([sg], [mg], marker="D", s=150, c='red', edgecolors='black', linewidths=2, label=f"GMV (σ={sg:.4f})", zorder=5)
+                    plt.scatter([stdev_t], [mt], marker="*", s=300, c='gold', edgecolors='black', linewidths=2, label=f"Tangency (Sharpe={sharpe_tan:.4f})", zorder=5)
+                    
+                    # Draw capital allocation line
+                    if stdev_t > 0:
+                        x_cal = np.array([0, stdev_t * 1.5])
+                        y_cal = rf + (mt - rf) / stdev_t * x_cal
+                        plt.plot(x_cal, y_cal, 'k--', alpha=0.5, label='Capital Allocation Line')
+                    
+                    plt.xlabel("σ (Standard Deviation)", fontsize=12)
+                    plt.ylabel("E[R] (Expected Return)", fontsize=12)
+                    plt.legend(loc='best')
+                    plt.title("Efficient Frontier with Key Portfolios", fontsize=14)
+                    plt.grid(alpha=0.3)
+                    plt.tight_layout()
+                    st.pyplot(fig2)
+                    
+                    # Summary table
+                    summary = pd.DataFrame({
+                        "Portfolio": ["GMV", "Tangency"],
+                        "E[R]": [mg, mt],
+                        "σ": [sg, stdev_t],
+                        "Sharpe": [np.nan, sharpe_tan]
+                    })
+                    st.write("**Key Portfolio Metrics:**")
+                    st.dataframe(summary.style.format({"E[R]": "{:.4f}", "σ": "{:.4f}", "Sharpe": "{:.4f}"}))
+                    
             except Exception as e:
-                st.warning(f"Could not mark GMV/Tangency on the plot: {e}")
+                st.warning(f"⚠️ Could not compute GMV/Tangency for plot overlay: {e}")
 
         except Exception as e:
-            st.error(f"Frontier computation failed: {e}")
+            st.error(f"❌ Frontier computation failed: {e}")
+
+st.divider()
+st.caption("Built with Streamlit • Portfolio optimization using Modern Portfolio Theory")
