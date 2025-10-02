@@ -220,20 +220,33 @@ default_cov = np.array([
 
 col_a, col_b = st.columns([1, 1])
 with col_a:
-    n_assets_input = st.number_input("Number of assets", min_value=1, max_value=50, value=4, step=1, key="n_assets_widget")
+    # Initialize the asset list on the first run.
+    if 'asset_names' not in st.session_state:
+        st.session_state.asset_names = default_assets[:]
+
+    # The number input's value is now controlled by the length of the actual asset list.
+    n_assets_input = st.number_input(
+        "Number of assets", 
+        min_value=1, 
+        max_value=50, 
+        value=len(st.session_state.asset_names), 
+        step=1, 
+        key="n_assets_widget"
+    )
     n_assets = n_assets_input
-    
+
     # asset names editor
-    if 'asset_names' not in st.session_state or len(st.session_state.asset_names) != n_assets:
-        if 'asset_names' in st.session_state and len(st.session_state.asset_names) < n_assets:
-            # If adding assets, extend existing names
-            current_len = len(st.session_state.asset_names)
-            extra = [f"Asset_{chr(65+i)}" for i in range(current_len, n_assets)]
-            st.session_state.asset_names.extend(extra)
-        else:
-            # Full reset or initialization
-            names_list = default_assets[:n_assets] if n_assets <= len(default_assets) else default_assets + [f"Asset_{chr(65+i)}" for i in range(len(default_assets), n_assets)]
-            st.session_state.asset_names = names_list
+    if len(st.session_state.asset_names) != n_assets:
+        # This block now handles both adding and removing assets via the number input
+        current_len = len(st.session_state.asset_names)
+        if n_assets > current_len: # Add new assets
+             extra = [f"Asset_{chr(65+i)}" for i in range(current_len, n_assets)]
+             st.session_state.asset_names.extend(extra)
+        else: # Trim assets
+            st.session_state.asset_names = st.session_state.asset_names[:n_assets]
+        
+        # We need to rerun for all other UI elements to catch up to the new asset count
+        st.rerun()
 
     names_df = pd.DataFrame({"Asset": st.session_state.asset_names})
     edited_names = st.data_editor(names_df, use_container_width=True, hide_index=True, key="names_editor")
@@ -252,6 +265,7 @@ with col_a:
     st.session_state.asset_names = asset_names
 
     # --- NEW: Delete Assets Section ---
+    # --- NEW: Delete Assets Section ---
     with st.expander("🗑️ Delete Assets"):
         assets_to_delete = st.multiselect(
             "Select assets to remove:",
@@ -260,8 +274,7 @@ with col_a:
         )
         if st.button("Delete Selected Assets", disabled=not assets_to_delete):
             delete_assets(assets_to_delete)
-            # Update the number of assets widget and rerun
-            st.session_state.n_assets_widget = len(st.session_state.asset_names)
+            # Just rerun. The widget will update itself on the next pass.
             st.rerun()
 
 with col_b:
