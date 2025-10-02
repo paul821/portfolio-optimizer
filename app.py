@@ -232,27 +232,73 @@ with col_b:
     edited_mu = st.data_editor(mu_df, use_container_width=True, key="mu_editor")
     st.session_state.mu_values = edited_mu["ExpectedReturn"].tolist()
 
-# covariance matrix editor (grid)
-st.markdown("#### Covariance Matrix")
-if n_assets <= default_cov.shape[0]:
-    init_cov = default_cov[:n_assets, :n_assets]
+# Risk input method selection
+st.markdown("#### Risk Input Method")
+risk_input_method = st.radio(
+    "Choose how to input risk:",
+    ["Standard Deviation (σ)", "Variance (σ²)"],
+    horizontal=True,
+    help="Standard deviation is more intuitive (same units as returns). Variance is used in calculations but harder to interpret."
+)
+
+use_variance = (risk_input_method == "Variance (σ²)")
+
+# covariance/correlation matrix editor
+if use_variance:
+    st.markdown("#### Covariance Matrix (Variance on diagonal)")
+    if n_assets <= default_cov.shape[0]:
+        init_matrix = default_cov[:n_assets, :n_assets]
+    else:
+        init_matrix = np.zeros((n_assets, n_assets))
+        old_size = min(default_cov.shape[0], n_assets)
+        init_matrix[:old_size, :old_size] = default_cov[:old_size, :old_size]
+        for i in range(default_cov.shape[0], n_assets):
+            init_matrix[i, i] = 0.1**2
+    
+    # Initialize session state for covariance
+    if 'cov_matrix' not in st.session_state or st.session_state.cov_matrix.shape[0] != n_assets:
+        st.session_state.cov_matrix = init_matrix
+    
+    matrix_df = pd.DataFrame(st.session_state.cov_matrix, index=asset_names, columns=asset_names)
+    edited_matrix = st.data_editor(matrix_df, use_container_width=True, key="cov_editor")
+    st.session_state.cov_matrix = edited_matrix.to_numpy(dtype=float)
+    Sigma = st.session_state.cov_matrix
+    
 else:
-    # expand with small values on diagonal
-    init_cov = np.zeros((n_assets, n_assets))
-    old_size = min(default_cov.shape[0], n_assets)
-    init_cov[:old_size, :old_size] = default_cov[:old_size, :old_size]
-    for i in range(default_cov.shape[0], n_assets):
-        init_cov[i, i] = 0.1**2
-
-# Initialize session state for covariance if not exists or wrong size
-if 'cov_matrix' not in st.session_state or st.session_state.cov_matrix.shape[0] != n_assets:
-    st.session_state.cov_matrix = init_cov
-
-cov_df = pd.DataFrame(st.session_state.cov_matrix, index=asset_names, columns=asset_names)
-edited_cov = st.data_editor(cov_df, use_container_width=True, key="cov_editor")
-
-# Update session state
-st.session_state.cov_matrix = edited_cov.to_numpy(dtype=float)
+    # Standard deviation + correlation approach
+    st.markdown("#### Standard Deviations")
+    
+    # Initialize std devs
+    init_std = np.sqrt(np.diag(default_cov[:n_assets, :n_assets])) if n_assets <= default_cov.shape[0] else np.full(n_assets, 0.1)
+    if 'std_devs' not in st.session_state or len(st.session_state.std_devs) != n_assets:
+        st.session_state.std_devs = init_std.tolist()
+    
+    std_df = pd.DataFrame({"StandardDeviation": st.session_state.std_devs}, index=asset_names)
+    edited_std = st.data_editor(std_df, use_container_width=True, key="std_editor")
+    st.session_state.std_devs = edited_std["StandardDeviation"].tolist()
+    std_array = np.array(st.session_state.std_devs)
+    
+    st.markdown("#### Correlation Matrix")
+    
+    # Initialize correlation matrix
+    if n_assets <= default_cov.shape[0]:
+        init_corr = np.corrcoef(default_cov[:n_assets, :n_assets])
+        if np.any(np.isnan(init_corr)):
+            init_corr = np.eye(n_assets)
+    else:
+        init_corr = np.eye(n_assets)
+    
+    if 'corr_matrix' not in st.session_state or st.session_state.corr_matrix.shape[0] != n_assets:
+        st.session_state.corr_matrix = init_corr
+    
+    corr_df = pd.DataFrame(st.session_state.corr_matrix, index=asset_names, columns=asset_names)
+    edited_corr = st.data_editor(corr_df, use_container_width=True, key="corr_editor")
+    st.session_state.corr_matrix = edited_corr.to_numpy(dtype=float)
+    
+    # Convert std dev + correlation to covariance matrix
+    D = np.diag(std_array)
+    Sigma = D @ st.session_state.corr_matrix @ D
+    st.session_state.cov_matrix = Sigma
 
 # parse inputs
 try:
@@ -297,13 +343,18 @@ if run:
         try:
             w_star, mu_p, sigma_p = one_fund_single_risky(mu_s, rf, sigma_s, A)
             
-            col1, col2, col3 = st.columns(3)
+            # Calculate Sharpe ratio for the portfolio
+            sharpe_p = (mu_p - rf) / sigma_p if sigma_p > 0 else np.nan
+            
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Optimal Risky Weight (w*)", f"{w_star:.4f}")
             with col2:
                 st.metric("Portfolio E[R]", f"{mu_p:.4f}")
             with col3:
                 st.metric("Portfolio σ", f"{sigma_p:.4f}")
+            with col4:
+                st.metric("Sharpe Ratio", f"{sharpe_p:.4f}")
             
             # Visual explanation
             investment_breakdown = pd.DataFrame({
@@ -313,7 +364,21 @@ if run:
             })
             st.dataframe(investment_breakdown.style.format({"Weight": "{:.4f}", "Allocation %": "{:.2f}%"}))
             
-            st.info(f"💡 **Interpretation:** Invest {w_star*100:.2f}% in the risky asset and {(1-w_star)*100:.2f}% in the risk-free asset.")
+            # Detailed statistics
+            st.write("**Portfolio Statistics:**")
+            stats_df = pd.DataFrame({
+                "Metric": ["Expected Return", "Standard Deviation", "Variance", "Sharpe Ratio", "Excess Return"],
+                "Value": [f"{mu_p:.4f}", f"{sigma_p:.4f}", f"{sigma_p**2:.6f}", f"{sharpe_p:.4f}", f"{mu_p - rf:.4f}"]
+            })
+            st.dataframe(stats_df, hide_index=True, use_container_width=True)
+            
+            # Investment interpretation
+            if w_star > 1:
+                st.info(f"💡 **Interpretation:** Lever up by borrowing {(w_star-1)*100:.2f}% at the risk-free rate to invest {w_star*100:.2f}% in the risky asset.")
+            elif w_star < 0:
+                st.info(f"💡 **Interpretation:** Short {abs(w_star)*100:.2f}% of the risky asset and invest {(1-w_star)*100:.2f}% in the risk-free asset.")
+            else:
+                st.info(f"💡 **Interpretation:** Invest {w_star*100:.2f}% in the risky asset and {(1-w_star)*100:.2f}% in the risk-free asset.")
         except Exception as e:
             st.error(f"❌ Computation failed: {e}")
 
@@ -337,13 +402,22 @@ if run:
             with col2:
                 st.metric("GMV σ", f"{s:.4f}")
             with col3:
-                st.metric("Sum of Weights", f"{w.sum():.4f}")
+                sharpe_gmv = (m - rf) / s if s > 0 else np.nan
+                st.metric("Sharpe Ratio", f"{sharpe_gmv:.4f}")
             
             # Show weights table
             out = pd.DataFrame({"Weight": w, "Allocation %": w * 100}, index=asset_names)
             out = out.sort_values("Weight", ascending=False)
             st.write("**GMV Portfolio Weights**")
             st.dataframe(out.style.format({"Weight": "{:.4f}", "Allocation %": "{:.2f}%"}), use_container_width=True)
+            
+            # Additional statistics
+            st.write("**Portfolio Statistics:**")
+            stats_df = pd.DataFrame({
+                "Metric": ["Expected Return", "Standard Deviation", "Variance", "Sharpe Ratio"],
+                "Value": [f"{m:.4f}", f"{s:.4f}", f"{s**2:.6f}", f"{sharpe_gmv:.4f}"]
+            })
+            st.dataframe(stats_df, hide_index=True, use_container_width=True)
             
             # Visualization
             fig, ax = plt.subplots(figsize=(8, 4))
@@ -381,13 +455,21 @@ if run:
             with col3:
                 st.metric("Sharpe Ratio", f"{sharpe:.4f}")
             with col4:
-                st.metric("Sum of Weights", f"{w.sum():.4f}")
+                st.metric("Variance", f"{s**2:.6f}")
             
             # Show weights table
             out = pd.DataFrame({"Weight": w, "Allocation %": w * 100}, index=asset_names)
             out = out.sort_values("Weight", ascending=False)
             st.write("**Tangency Portfolio Weights**")
             st.dataframe(out.style.format({"Weight": "{:.4f}", "Allocation %": "{:.2f}%"}), use_container_width=True)
+            
+            # Additional statistics
+            st.write("**Portfolio Statistics:**")
+            stats_df = pd.DataFrame({
+                "Metric": ["Expected Return", "Standard Deviation", "Variance", "Sharpe Ratio", "Excess Return"],
+                "Value": [f"{m:.4f}", f"{s:.4f}", f"{s**2:.6f}", f"{sharpe:.4f}", f"{m - rf:.4f}"]
+            })
+            st.dataframe(stats_df, hide_index=True, use_container_width=True)
             
             # Visualization
             fig, ax = plt.subplots(figsize=(8, 4))
@@ -417,17 +499,21 @@ if run:
                 st.error("❌ Failed to compute any frontier points.")
                 st.stop()
 
-            # Show a few points
-            tbl = pd.DataFrame({"E[R]": R, "σ": S})
+            # Calculate Sharpe ratios for all points
+            sharpe_ratios = (R - rf) / S
+            sharpe_ratios[S == 0] = np.nan
+
+            # Show a few points with Sharpe ratios
+            tbl = pd.DataFrame({"E[R]": R, "σ": S, "Sharpe": sharpe_ratios})
             st.write(f"**Frontier Points Computed:** {len(R)}")
             
             col1, col2 = st.columns(2)
             with col1:
                 st.write("**First 10 Points:**")
-                st.dataframe(tbl.head(10).style.format({"E[R]":"{:.4f}", "σ":"{:.4f}"}))
+                st.dataframe(tbl.head(10).style.format({"E[R]":"{:.4f}", "σ":"{:.4f}", "Sharpe":"{:.4f}"}))
             with col2:
                 st.write("**Last 10 Points:**")
-                st.dataframe(tbl.tail(10).style.format({"E[R]":"{:.4f}", "σ":"{:.4f}"}))
+                st.dataframe(tbl.tail(10).style.format({"E[R]":"{:.4f}", "σ":"{:.4f}", "Sharpe":"{:.4f}"}))
 
             # Plot frontier
             fig = plt.figure(figsize=(10, 6))
