@@ -1,4 +1,4 @@
-# app.py — Portfolio Optimizer (One-Fund, GMV, Tangency, Frontier) - DEBUGGED
+# app.py — Portfolio Optimizer (One-Fund, GMV, Tangency, Frontier) - FIXED
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
@@ -154,35 +154,6 @@ def equal_weight_portfolio(n):
     return np.ones(n) / n
 
 def efficient_frontier_long_only(mu, Sigma, n_points=60, theta_max_scale=50.0):
-    # Stable approach: for θ in [0, Θ], minimize w'Σw - θ μ'w, s.t. 1'w=1, w>=0.
-    mu, Sigma, ones, n = _check_inputs(mu, Sigma)
-    mu_flat = mu.flatten()
-    bounds = [(0.0, 1.0)] * n
-    cons = ({"type": "eq", "fun": lambda w: np.sum(w) - 1.0},)
-
-    scale = max(1e-3, float(np.abs(mu_flat).mean()))
-    thetas = np.linspace(0.0, theta_max_scale * scale, n_points)
-    W, R, S = [], [], []
-    rng = np.random.default_rng(123)
-    w_start = np.ones(n) / n
-    for theta in thetas:
-        def obj(w, th=theta): return float(w @ Sigma @ w - th * (w @ mu_flat))
-        best = None
-        # a couple of restarts
-        for z in [w_start, rng.random(n)]:
-            z = z / z.sum()
-            res = minimize(obj, z, method="SLSQP", bounds=bounds, constraints=cons,
-                           options={"maxiter": 800, "ftol": 1e-9})
-            if res.success and (best is None or res.fun < best.fun):
-                best = res
-        if best is None:
-            w = w_start
-        else:
-            w = best.x
-            w_start = w
-        m, s, _, _ = portfolio_stats(w, mu, Sigma)
-        W.append(w); R.append(m); S.append(s)
-    return np.array(W), np.array(R), np.array(S)
     # Stable approach: for θ in [0, Θ], minimize w'Σw - θ μ'w, s.t. 1'w=1, w>=0.
     mu, Sigma, ones, n = _check_inputs(mu, Sigma)
     mu_flat = mu.flatten()
@@ -591,10 +562,10 @@ if run:
             # Visualization
             fig, ax = plt.subplots(figsize=(8, 4))
             colors = plt.cm.Set3(np.linspace(0, 1, len(asset_names)))
-            bars = ax.barh(asset_names, w, color=colors)
+            ax.barh(asset_names, w, color=colors)
             ax.set_xlabel("Weight")
             ax.set_title("GMV Portfolio Allocation")
-            ax.axvline(0, color='black', linewidth=0.5)
+            ax.axvline(0, linewidth=0.5)
             plt.tight_layout()
             st.pyplot(fig)
             
@@ -643,10 +614,10 @@ if run:
             # Visualization
             fig, ax = plt.subplots(figsize=(8, 4))
             colors = plt.cm.Set3(np.linspace(0, 1, len(asset_names)))
-            bars = ax.barh(asset_names, w, color=colors)
+            ax.barh(asset_names, w, color=colors)
             ax.set_xlabel("Weight")
             ax.set_title(f"Tangency Portfolio Allocation (Sharpe = {sharpe:.4f})")
-            ax.axvline(0, color='black', linewidth=0.5)
+            ax.axvline(0, linewidth=0.5)
             plt.tight_layout()
             st.pyplot(fig)
             
@@ -668,12 +639,17 @@ if run:
                 st.error("❌ Failed to compute any frontier points.")
                 st.stop()
 
-            # Show a few points with individual asset allocation details
+            # --- FIX: define sharpe_ratios safely ---
+            sharpe_ratios = np.divide(R - rf, S, out=np.full_like(R, np.nan), where=S > 1e-12)
+
+            # Show a quick table of frontier points
             tbl = pd.DataFrame({"E[R]": R, "σ": S, "Sharpe": sharpe_ratios})
             st.write(f"**Frontier Points Computed:** {len(R)}")
+            st.dataframe(tbl.style.format({"E[R]": "{:.4f}", "σ": "{:.4f}", "Sharpe": "{:.4f}"}), use_container_width=True)
             
             # Add columns showing allocation to each asset for sample points
-            sample_indices = [0, len(R)//4, len(R)//2, 3*len(R)//4, len(R)-1]
+            raw_idx = [0, len(R)//4, len(R)//2, (3*len(R))//4, len(R)-1]
+            sample_indices = sorted(set(i for i in raw_idx if 0 <= i < len(R)))
             sample_points = []
             for idx in sample_indices:
                 point_data = {"E[R]": R[idx], "σ": S[idx], "Sharpe": sharpe_ratios[idx]}
@@ -690,7 +666,7 @@ if run:
 
             # Plot frontier
             fig = plt.figure(figsize=(10, 6))
-            plt.scatter(S, R, s=20, alpha=0.6, c=R, cmap='viridis')
+            plt.scatter(S, R)
             plt.colorbar(label='Expected Return')
             plt.xlabel("σ (Standard Deviation)", fontsize=12)
             plt.ylabel("E[R] (Expected Return)", fontsize=12)
@@ -709,15 +685,15 @@ if run:
                     sharpe_tan = (mt - rf) / stdev_t if stdev_t > 0 else np.nan
 
                     fig2 = plt.figure(figsize=(10, 6))
-                    plt.scatter(S, R, s=20, alpha=0.4, c=R, cmap='viridis', label="Efficient Frontier")
-                    plt.scatter([sg], [mg], marker="D", s=150, c='red', edgecolors='black', linewidths=2, label=f"GMV (σ={sg:.4f})", zorder=5)
-                    plt.scatter([stdev_t], [mt], marker="*", s=300, c='gold', edgecolors='black', linewidths=2, label=f"Tangency (Sharpe={sharpe_tan:.4f})", zorder=5)
+                    plt.scatter(S, R, alpha=0.4, label="Efficient Frontier")
+                    plt.scatter([sg], [mg], marker="D", s=150, label=f"GMV (σ={sg:.4f})", zorder=5)
+                    plt.scatter([stdev_t], [mt], marker="*", s=300, label=f"Tangency (Sharpe={sharpe_tan:.4f})", zorder=5)
                     
                     # Draw capital allocation line
                     if stdev_t > 0:
                         x_cal = np.array([0, stdev_t * 1.5])
                         y_cal = rf + (mt - rf) / stdev_t * x_cal
-                        plt.plot(x_cal, y_cal, 'k--', alpha=0.5, label='Capital Allocation Line')
+                        plt.plot(x_cal, y_cal, '--', alpha=0.5, label='Capital Allocation Line')
                     
                     plt.xlabel("σ (Standard Deviation)", fontsize=12)
                     plt.ylabel("E[R] (Expected Return)", fontsize=12)
@@ -787,10 +763,10 @@ if run:
             # Visualization
             fig, ax = plt.subplots(figsize=(8, 4))
             colors = plt.cm.Set3(np.linspace(0, 1, len(asset_names)))
-            bars = ax.barh(asset_names, w, color=colors)
+            ax.barh(asset_names, w, color=colors)
             ax.set_xlabel("Weight")
             ax.set_title(f"Risk Parity Portfolio Allocation ({method_desc})")
-            ax.axvline(0, color='black', linewidth=0.5)
+            ax.axvline(0, linewidth=0.5)
             plt.tight_layout()
             st.pyplot(fig)
             
@@ -835,10 +811,10 @@ if run:
             # Visualization
             fig, ax = plt.subplots(figsize=(8, 4))
             colors = plt.cm.Set3(np.linspace(0, 1, len(asset_names)))
-            bars = ax.barh(asset_names, w, color=colors)
+            ax.barh(asset_names, w, color=colors)
             ax.set_xlabel("Weight")
             ax.set_title("Equal-Weight Portfolio Allocation (1/N)")
-            ax.axvline(0, color='black', linewidth=0.5)
+            ax.axvline(0, linewidth=0.5)
             plt.tight_layout()
             st.pyplot(fig)
             
