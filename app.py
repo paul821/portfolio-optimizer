@@ -668,21 +668,25 @@ if run:
                 st.error("❌ Failed to compute any frontier points.")
                 st.stop()
 
-            # Calculate Sharpe ratios for all points
-            sharpe_ratios = (R - rf) / S
-            sharpe_ratios[S == 0] = np.nan
-
-            # Show a few points with Sharpe ratios
+            # Show a few points with individual asset allocation details
             tbl = pd.DataFrame({"E[R]": R, "σ": S, "Sharpe": sharpe_ratios})
             st.write(f"**Frontier Points Computed:** {len(R)}")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write("**First 10 Points:**")
-                st.dataframe(tbl.head(10).style.format({"E[R]":"{:.4f}", "σ":"{:.4f}", "Sharpe":"{:.4f}"}))
-            with col2:
-                st.write("**Last 10 Points:**")
-                st.dataframe(tbl.tail(10).style.format({"E[R]":"{:.4f}", "σ":"{:.4f}", "Sharpe":"{:.4f}"}))
+            # Add columns showing allocation to each asset for sample points
+            sample_indices = [0, len(R)//4, len(R)//2, 3*len(R)//4, len(R)-1]
+            sample_points = []
+            for idx in sample_indices:
+                point_data = {"E[R]": R[idx], "σ": S[idx], "Sharpe": sharpe_ratios[idx]}
+                for i, name in enumerate(asset_names):
+                    point_data[name] = W[idx][i]
+                sample_points.append(point_data)
+            
+            sample_df = pd.DataFrame(sample_points)
+            st.write("**Sample Frontier Points with Allocations:**")
+            format_dict = {"E[R]": "{:.4f}", "σ": "{:.4f}", "Sharpe": "{:.4f}"}
+            for name in asset_names:
+                format_dict[name] = "{:.2%}"
+            st.dataframe(sample_df.style.format(format_dict), use_container_width=True)
 
             # Plot frontier
             fig = plt.figure(figsize=(10, 6))
