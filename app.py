@@ -639,7 +639,7 @@ if run:
                 st.error("❌ Failed to compute any frontier points.")
                 st.stop()
 
-            # --- FIX: define sharpe_ratios safely ---
+            # define sharpe_ratios safely
             sharpe_ratios = np.divide(R - rf, S, out=np.full_like(R, np.nan), where=S > 1e-12)
 
             # Show a quick table of frontier points
@@ -664,66 +664,72 @@ if run:
                 format_dict[name] = "{:.2%}"
             st.dataframe(sample_df.style.format(format_dict), use_container_width=True)
 
-            # Plot frontier
+            # Plot frontier + individual assets
             fig = plt.figure(figsize=(10, 6))
-# Efficient frontier points
-plt.scatter(S, R, s=20, alpha=0.6, label="Efficient Frontier")
+            # Efficient frontier points
+            plt.scatter(S, R, s=20, alpha=0.6, label="Efficient Frontier")
 
-# --- NEW: plot individual assets (funds) ---
-asset_sigmas = np.sqrt(np.diag(_Sigma))
-asset_returns = _mu.flatten()
-plt.scatter(asset_sigmas, asset_returns, marker="o", s=90, edgecolors='black', linewidths=0.5, label="Assets", zorder=6)
-for xs, ys, name in zip(asset_sigmas, asset_returns, asset_names):
-    plt.annotate(name, (xs, ys), xytext=(6, 6), textcoords='offset points')
+            # plot individual assets (funds)
+            asset_sigmas = np.sqrt(np.diag(_Sigma))
+            asset_returns = _mu.flatten()
+            plt.scatter(
+                asset_sigmas, asset_returns,
+                marker="o", s=90, edgecolors="black", linewidths=0.5,
+                label="Assets", zorder=6
+            )
+            for xs, ys, name in zip(asset_sigmas, asset_returns, asset_names):
+                plt.annotate(name, (xs, ys), xytext=(6, 6), textcoords="offset points")
 
-# Colorbar keyed to expected return of frontier (optional aesthetic)
-sc = plt.scatter(S, R, s=0)  # dummy mappable for colorbar spacing
-plt.colorbar(label='Expected Return')
-
-plt.xlabel("σ (Standard Deviation)", fontsize=12)
-plt.ylabel("E[R] (Expected Return)", fontsize=12)
-plt.title("Efficient Frontier" + (" — Long-only" if long_only else " — Unconstrained"), fontsize=14)
-plt.legend(loc='best')
-plt.grid(alpha=0.3)
-plt.tight_layout()
-st.pyplot(fig)
+            plt.xlabel("σ (Standard Deviation)", fontsize=12)
+            plt.ylabel("E[R] (Expected Return)", fontsize=12)
+            plt.title("Efficient Frontier" + (" — Long-only" if long_only else " — Unconstrained"), fontsize=14)
+            plt.legend(loc="best")
+            plt.grid(alpha=0.3)
+            plt.tight_layout()
+            st.pyplot(fig)
 
             # Also mark GMV and Tangency on the plot
             try:
                 with st.spinner("Adding GMV and Tangency portfolios to plot..."):
                     w_gmv = gmv_long_only(Sigma) if long_only else gmv_unconstrained(Sigma)
                     mg, sg, *_ = portfolio_stats(w_gmv, _mu, _Sigma)
+
                     w_tan = tangency_long_only(mu, Sigma, rf) if long_only else tangency_unconstrained(mu, Sigma, rf)
                     mt, stdev_t, *_ = portfolio_stats(w_tan, _mu, _Sigma)
                     sharpe_tan = (mt - rf) / stdev_t if stdev_t > 0 else np.nan
 
                     fig2 = plt.figure(figsize=(10, 6))
-plt.scatter(S, R, alpha=0.4, label="Efficient Frontier")
+                    plt.scatter(S, R, alpha=0.4, label="Efficient Frontier")
 
-# --- NEW: plot individual assets (funds) ---
-asset_sigmas = np.sqrt(np.diag(_Sigma))
-asset_returns = _mu.flatten()
-plt.scatter(asset_sigmas, asset_returns, marker="o", s=90, edgecolors='black', linewidths=0.5, label="Assets", zorder=6)
-for xs, ys, name in zip(asset_sigmas, asset_returns, asset_names):
-    plt.annotate(name, (xs, ys), xytext=(6, 6), textcoords='offset points')
+                    # plot individual assets (funds)
+                    asset_sigmas = np.sqrt(np.diag(_Sigma))
+                    asset_returns = _mu.flatten()
+                    plt.scatter(
+                        asset_sigmas, asset_returns,
+                        marker="o", s=90, edgecolors="black", linewidths=0.5,
+                        label="Assets", zorder=6
+                    )
+                    for xs, ys, name in zip(asset_sigmas, asset_returns, asset_names):
+                        plt.annotate(name, (xs, ys), xytext=(6, 6), textcoords="offset points")
 
-plt.scatter([sg], [mg], marker="D", s=150, label=f"GMV (σ={sg:.4f})", zorder=7)
-plt.scatter([stdev_t], [mt], marker="*", s=300, label=f"Tangency (Sharpe={sharpe_tan:.4f})", zorder=8)
+                    # GMV + Tangency
+                    plt.scatter([sg], [mg], marker="D", s=150, label=f"GMV (σ={sg:.4f})", zorder=7)
+                    plt.scatter([stdev_t], [mt], marker="*", s=300, label=f"Tangency (Sharpe={sharpe_tan:.4f})", zorder=8)
 
-# Draw capital allocation line
-if stdev_t > 0:
-    x_cal = np.array([0, stdev_t * 1.5])
-    y_cal = rf + (mt - rf) / stdev_t * x_cal
-    plt.plot(x_cal, y_cal, '--', alpha=0.5, label='Capital Allocation Line')
+                    # CAL
+                    if stdev_t > 0:
+                        x_cal = np.array([0, stdev_t * 1.5])
+                        y_cal = rf + (mt - rf) / stdev_t * x_cal
+                        plt.plot(x_cal, y_cal, '--', alpha=0.5, label='Capital Allocation Line')
 
-plt.xlabel("σ (Standard Deviation)", fontsize=12)
-plt.ylabel("E[R] (Expected Return)", fontsize=12)
-plt.legend(loc='best')
-plt.title("Efficient Frontier with Key Portfolios", fontsize=14)
-plt.grid(alpha=0.3)
-plt.tight_layout()
-st.pyplot(fig2)
-                    
+                    plt.xlabel("σ (Standard Deviation)", fontsize=12)
+                    plt.ylabel("E[R] (Expected Return)", fontsize=12)
+                    plt.legend(loc="best")
+                    plt.title("Efficient Frontier with Key Portfolios", fontsize=14)
+                    plt.grid(alpha=0.3)
+                    plt.tight_layout()
+                    st.pyplot(fig2)
+
                     # Summary table
                     summary = pd.DataFrame({
                         "Portfolio": ["GMV", "Tangency"],
@@ -733,7 +739,6 @@ st.pyplot(fig2)
                     })
                     st.write("**Key Portfolio Metrics:**")
                     st.dataframe(summary.style.format({"E[R]": "{:.4f}", "σ": "{:.4f}", "Sharpe": "{:.4f}"}))
-                    
             except Exception as e:
                 st.warning(f"⚠️ Could not compute GMV/Tangency for plot overlay: {e}")
 
