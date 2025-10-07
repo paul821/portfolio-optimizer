@@ -152,6 +152,37 @@ def risk_parity_stddev(Sigma):
 def equal_weight_portfolio(n):
     """Equal weight portfolio: w_i = 1/N"""
     return np.ones(n) / n
+
+def efficient_frontier_long_only(mu, Sigma, n_points=60, theta_max_scale=50.0):
+    # Stable approach: for θ in [0, Θ], minimize w'Σw - θ μ'w, s.t. 1'w=1, w>=0.
+    mu, Sigma, ones, n = _check_inputs(mu, Sigma)
+    mu_flat = mu.flatten()
+    bounds = [(0.0, 1.0)] * n
+    cons = ({"type": "eq", "fun": lambda w: np.sum(w) - 1.0},)
+
+    scale = max(1e-3, float(np.abs(mu_flat).mean()))
+    thetas = np.linspace(0.0, theta_max_scale * scale, n_points)
+    W, R, S = [], [], []
+    rng = np.random.default_rng(123)
+    w_start = np.ones(n) / n
+    for theta in thetas:
+        def obj(w, th=theta): return float(w @ Sigma @ w - th * (w @ mu_flat))
+        best = None
+        # a couple of restarts
+        for z in [w_start, rng.random(n)]:
+            z = z / z.sum()
+            res = minimize(obj, z, method="SLSQP", bounds=bounds, constraints=cons,
+                           options={"maxiter": 800, "ftol": 1e-9})
+            if res.success and (best is None or res.fun < best.fun):
+                best = res
+        if best is None:
+            w = w_start
+        else:
+            w = best.x
+            w_start = w
+        m, s, _, _ = portfolio_stats(w, mu, Sigma)
+        W.append(w); R.append(m); S.append(s)
+    return np.array(W), np.array(R), np.array(S)
     # Stable approach: for θ in [0, Θ], minimize w'Σw - θ μ'w, s.t. 1'w=1, w>=0.
     mu, Sigma, ones, n = _check_inputs(mu, Sigma)
     mu_flat = mu.flatten()
